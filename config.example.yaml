@@ -1,6 +1,7 @@
 # 复制本文件为 config.yaml 后按需修改
 # listen: 本地混合入站端口，同时支持 HTTP 代理和 SOCKS5
-listen: 127.0.0.1:7899
+# 注意：7899 已被本机 systemd 的 port7899-forward 占用，本地测试用 17898
+listen: 127.0.0.1:17898
 
 # upstream: 下一级代理，type 支持 http / socks5
 upstream:
