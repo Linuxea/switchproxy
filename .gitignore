@@ -1,0 +1,12 @@
+# 二进制
+switchproxy
+switchproxy-*
+*.exe
+
+# 本地真实配置（含私有域名，不要提交）
+config.yaml
+
+# 运行时产物
+*.log
+*.pid
+nohup.out

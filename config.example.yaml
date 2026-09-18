@@ -1,0 +1,24 @@
+# 复制本文件为 config.yaml 后按需修改
+# listen: 本地混合入站端口，同时支持 HTTP 代理和 SOCKS5
+listen: 127.0.0.1:7899
+
+# upstream: 下一级代理，type 支持 http / socks5
+upstream:
+  type: http
+  addr: 127.0.0.1:7890
+
+# default: 未命中任何规则时的动作 PROXY / DIRECT / REJECT
+default: PROXY
+
+# 规则从上到下匹配，命中即停（与 Clash/Surge 规则行格式一致）
+# 支持: DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR / PORT
+rules:
+  # 走直连的域名
+  - DOMAIN-SUFFIX,example.com,DIRECT
+  - DOMAIN-KEYWORD,localhost,DIRECT
+  # 局域网/本机直连
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT
+  # 拦截示例
+  # - DOMAIN-SUFFIX,ads.example,REJECT
