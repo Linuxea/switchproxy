@@ -22,3 +22,9 @@ rules:
   - IP-CIDR,127.0.0.0/8,DIRECT
   # 拦截示例
   # - DOMAIN-SUFFIX,ads.example,REJECT
+
+# 实时流量监控面板（可选，缺省即启用）
+monitor:
+  listen: 127.0.0.1:9090   # 管理端地址，浏览器打开即面板
+  db: switchproxy.db       # SQLite 历史库（分钟级流量点 + 按天域名统计）
+  # disable: true          # 设为 true 关闭监控

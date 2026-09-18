@@ -40,11 +40,18 @@ type Rule struct {
 	cidr   *net.IPNet
 }
 
+type MonitorConfig struct {
+	Disable bool   `yaml:"disable"` // 设为 true 关闭监控面板
+	Listen  string `yaml:"listen"`  // 管理端监听地址，默认 127.0.0.1:9090
+	DB      string `yaml:"db"`      // SQLite 历史库路径，默认 switchproxy.db
+}
+
 type Config struct {
-	Listen   string   `yaml:"listen"`
-	Upstream Upstream `yaml:"upstream"`
-	Default  string   `yaml:"default"`
-	Rules    []string `yaml:"rules"`
+	Listen   string        `yaml:"listen"`
+	Upstream Upstream      `yaml:"upstream"`
+	Default  string        `yaml:"default"`
+	Rules    []string      `yaml:"rules"`
+	Monitor  MonitorConfig `yaml:"monitor"`
 	rules    []Rule
 	pidFile  string
 }
@@ -95,6 +102,12 @@ func loadConfig(path string) (*Config, error) {
 	cfg.Default = strings.ToUpper(cfg.Default)
 	if cfg.Upstream.Addr != "" && cfg.Upstream.Type == "" {
 		cfg.Upstream.Type = "http"
+	}
+	if cfg.Monitor.Listen == "" {
+		cfg.Monitor.Listen = "127.0.0.1:9090"
+	}
+	if cfg.Monitor.DB == "" {
+		cfg.Monitor.DB = "switchproxy.db"
 	}
 	for _, raw := range cfg.Rules {
 		r, err := parseRule(raw)
@@ -213,21 +226,29 @@ func dialByAction(cfg *Config, action, addr string) (net.Conn, error) {
 
 // ---------------- 隧道 ----------------
 
-func tunnel(client, server net.Conn, br *bufio.Reader) {
+func tunnel(client, server net.Conn, br *bufio.Reader, meta *ConnMeta) {
 	defer client.Close()
 	defer server.Close()
+	defer stats.unregister(meta)
+
+	// 上行 = 客户端 -> 目标；下行 = 目标 -> 客户端
+	up := func(n int64) { stats.addUp(meta, n) }
+	down := func(n int64) { stats.addDown(meta, n) }
+	cw := &countingConn{Conn: client, onRead: up, onWrite: down}
+	sw := &countingConn{Conn: server, onRead: down, onWrite: up}
+
 	if br != nil && br.Buffered() > 0 {
 		if data, err := br.Peek(br.Buffered()); err == nil {
-			server.Write(data)
+			sw.Write(data)
 		}
 	}
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(server, client)
+		io.Copy(sw, cw)
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(client, server)
+		io.Copy(cw, sw)
 		done <- struct{}{}
 	}()
 	<-done
@@ -290,7 +311,8 @@ func serveHTTP(client net.Conn, br *bufio.Reader) {
 			return
 		}
 		client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-		tunnel(client, server, br)
+		meta := stats.register("HTTP", host, port, hit, action, client)
+		tunnel(client, server, br, meta)
 		return
 	}
 
@@ -327,7 +349,9 @@ func serveHTTP(client net.Conn, br *bufio.Reader) {
 	}
 	sb.WriteString("\r\n")
 	server.Write([]byte(sb.String()))
-	tunnel(client, server, br)
+	meta := stats.register("HTTP", host, port, hit, action, client)
+	stats.addUp(meta, int64(sb.Len()))
+	tunnel(client, server, br, meta)
 }
 
 // ---------------- SOCKS5 代理入站 ----------------
@@ -407,7 +431,8 @@ func serveSocks5(client net.Conn, br *bufio.Reader) {
 		return
 	}
 	replySocks(client, 0x00)
-	tunnel(client, server, br)
+	meta := stats.register("SOCKS5", host, port, hit, action, client)
+	tunnel(client, server, br, meta)
 }
 
 // ---------------- 主流程 ----------------
@@ -482,8 +507,23 @@ func main() {
 		log.Fatal("listen: ", err)
 	}
 	go watchConfig()
-	log.Printf("switchproxy listening on %s (HTTP+SOCKS5 mixed) | upstream %s (%s) | default=%s | %d rules | pid=%d",
-		cfg.Listen, cfg.Upstream.Addr, cfg.Upstream.Type, cfg.Default, len(cfg.rules), os.Getpid())
+	go stats.sampleLoop()
+	if !cfg.Monitor.Disable {
+		hdb, err := openHistory(cfg.Monitor.DB)
+		if err != nil {
+			log.Println("monitor: history db disabled:", err)
+			hdb = nil
+		}
+		go startAdmin(cfg.Monitor.Listen, hdb)
+	}
+	log.Printf("switchproxy listening on %s (HTTP+SOCKS5 mixed) | upstream %s (%s) | default=%s | %d rules | pid=%d | monitor=%s",
+		cfg.Listen, cfg.Upstream.Addr, cfg.Upstream.Type, cfg.Default, len(cfg.rules), os.Getpid(),
+		func() string {
+			if cfg.Monitor.Disable {
+				return "off"
+			}
+			return "http://" + cfg.Monitor.Listen
+		}())
 	for {
 		c, err := ln.Accept()
 		if err != nil {
