@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import * as echarts from 'echarts'
 import { wsState } from '../composables/useWs'
 import { useChart, axisCommon, chartPalette } from '../lib/chart'
 import { fmtBytes, fmtRate, fmtUptime } from '../lib/format'
+import JunctionStrip from '../components/JunctionStrip.vue'
 
 const el = ref<HTMLElement | null>(null)
 const { apply } = useChart(el)
@@ -25,7 +25,7 @@ watch(ov, (o) => {
       trigger: 'axis',
       valueFormatter: (v) => fmtRate(Number(v)),
     },
-    legend: { data: ['下行', '上行'], textStyle: { color: cp.legend }, top: 4, right: 8 },
+    legend: { data: ['下行', '上行'], textStyle: { color: cp.legend, fontFamily: 'IBM Plex Sans, PingFang SC, sans-serif' }, top: 4, right: 8 },
     xAxis: { type: 'category', boundaryGap: false, data: times, ...ax },
     yAxis: {
       type: 'value',
@@ -36,30 +36,20 @@ watch(ov, (o) => {
       {
         name: '下行',
         type: 'line',
-        smooth: true,
+        smooth: false, // 走纸记录仪：直线段描迹，不平滑
         symbol: 'none',
         data: o.rates.map((p) => p.down),
         lineStyle: { width: 1.5, color: cp.down },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: cp.downArea[0] },
-            { offset: 1, color: cp.downArea[1] },
-          ]),
-        },
+        areaStyle: { color: cp.downArea },
       },
       {
         name: '上行',
         type: 'line',
-        smooth: true,
+        smooth: false,
         symbol: 'none',
         data: o.rates.map((p) => p.up),
         lineStyle: { width: 1.5, color: cp.up },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: cp.upArea[0] },
-            { offset: 1, color: cp.upArea[1] },
-          ]),
-        },
+        areaStyle: { color: cp.upArea },
       },
     ],
   })
@@ -68,38 +58,41 @@ watch(ov, (o) => {
 
 <template>
   <div v-if="ov">
-    <div class="cards">
-      <div class="card">
-        <div class="label">下行速率</div>
-        <div class="value down">{{ fmtRate(ov.downRate) }}</div>
+    <JunctionStrip />
+
+    <div class="readouts">
+      <div class="readout major">
+        <div class="k"><span class="sig down">↓</span>下行速率</div>
+        <div class="v down">{{ fmtRate(ov.downRate) }}</div>
       </div>
-      <div class="card">
-        <div class="label">上行速率</div>
-        <div class="value up">{{ fmtRate(ov.upRate) }}</div>
+      <div class="readout major">
+        <div class="k"><span class="sig up">↑</span>上行速率</div>
+        <div class="v up">{{ fmtRate(ov.upRate) }}</div>
       </div>
-      <div class="card">
-        <div class="label">活跃连接</div>
-        <div class="value green">{{ ov.activeConns }}</div>
+      <div class="readout">
+        <div class="k">活跃连接</div>
+        <div class="v">{{ ov.activeConns }}</div>
       </div>
-      <div class="card">
-        <div class="label">累计连接</div>
-        <div class="value">{{ ov.totalConns }}</div>
+      <div class="readout">
+        <div class="k">累计连接</div>
+        <div class="v">{{ ov.totalConns.toLocaleString() }}</div>
       </div>
-      <div class="card">
-        <div class="label">累计下行</div>
-        <div class="value down">{{ fmtBytes(ov.totalDown) }}</div>
+      <div class="readout">
+        <div class="k">累计下行</div>
+        <div class="v">{{ fmtBytes(ov.totalDown) }}</div>
       </div>
-      <div class="card">
-        <div class="label">累计上行</div>
-        <div class="value up">{{ fmtBytes(ov.totalUp) }}</div>
+      <div class="readout">
+        <div class="k">累计上行</div>
+        <div class="v">{{ fmtBytes(ov.totalUp) }}</div>
       </div>
-      <div class="card">
-        <div class="label">运行时间</div>
-        <div class="value">{{ fmtUptime(ov.uptime) }}</div>
+      <div class="readout">
+        <div class="k">运行时间</div>
+        <div class="v">{{ fmtUptime(ov.uptime) }}</div>
       </div>
     </div>
+
     <div class="panel">
-      <h3 class="panel-title">实时速率（近 {{ ov.rates.length }} 秒）</h3>
+      <h3 class="panel-title">实时速率 · 近 {{ ov.rates.length }} 秒</h3>
       <div ref="el" class="chart"></div>
     </div>
   </div>

@@ -27,39 +27,42 @@ export function useChart(el: Ref<HTMLElement | null>) {
   return { apply }
 }
 
-// 主题感知的图表配色：视图每次渲染时取当前值，切主题后由 App 层 :key 重挂载重绘。
+// 主题感知的图表配色：信号语义（绿=下行/放行、黄=上行/绕行），与 CSS token 同源。
+// 视图每次渲染时取当前值，切主题后由 App 层 :key 重挂载重绘。
 export function chartPalette() {
   return themeState.dark
     ? {
-        text: '#c7d0dd',
-        axisLine: '#3a4150',
-        axisLabel: '#7d8794',
-        splitLine: '#232a36',
-        legend: '#9aa4b2',
-        down: '#22d3ee',
-        downArea: ['rgba(34,211,238,0.28)', 'rgba(34,211,238,0)'],
-        up: '#f59e0b',
-        upArea: ['rgba(245,158,11,0.22)', 'rgba(245,158,11,0)'],
+        text: '#b9bec4',
+        axisLine: '#33363b',
+        axisLabel: '#7f858c',
+        splitLine: '#2a2d31',
+        legend: '#7f858c',
+        down: '#35c98a',
+        downArea: 'rgba(53, 201, 138, 0.13)',
+        up: '#eda23c',
+        upArea: 'rgba(237, 162, 60, 0.11)',
+        mono: 'IBM Plex Mono, PingFang SC, Consolas, monospace',
       }
     : {
-        text: '#24292f',
-        axisLine: '#c7ced9',
-        axisLabel: '#6b7280',
-        splitLine: '#e5e9f0',
-        legend: '#6b7280',
-        down: '#0891b2',
-        downArea: ['rgba(8,145,178,0.2)', 'rgba(8,145,178,0)'],
-        up: '#d97706',
-        upArea: ['rgba(217,119,6,0.18)', 'rgba(217,119,6,0)'],
+        text: '#3a3f45',
+        axisLine: '#d5d9dd',
+        axisLabel: '#71767d',
+        splitLine: '#e4e7ea',
+        legend: '#71767d',
+        down: '#0c7f4c',
+        downArea: 'rgba(12, 127, 76, 0.11)',
+        up: '#b35c07',
+        upArea: 'rgba(179, 92, 7, 0.10)',
+        mono: 'IBM Plex Mono, PingFang SC, Consolas, monospace',
       }
 }
 
-// 通用坐标轴配置（原 axisCommon，改为函数以感知主题）
+// 通用坐标轴配置：虚线细网格，走纸记录仪质感
 export function axisCommon() {
   const p = chartPalette()
   return {
     axisLine: { lineStyle: { color: p.axisLine } },
-    axisLabel: { color: p.axisLabel },
-    splitLine: { lineStyle: { color: p.splitLine } },
+    axisLabel: { color: p.axisLabel, fontFamily: p.mono },
+    splitLine: { lineStyle: { color: p.splitLine, type: 'dashed' as const } },
   }
 }

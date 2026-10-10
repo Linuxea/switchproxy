@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import * as echarts from 'echarts'
 import { useChart, axisCommon, chartPalette } from '../lib/chart'
 import { fmtBytes } from '../lib/format'
 
@@ -55,7 +54,7 @@ function render() {
       trigger: 'axis',
       valueFormatter: (v) => fmtBytes(Number(v)),
     },
-    legend: { data: ['下行', '上行'], textStyle: { color: cp.legend }, top: 4, right: 8 },
+    legend: { data: ['下行', '上行'], textStyle: { color: cp.legend, fontFamily: 'IBM Plex Sans, PingFang SC, sans-serif' }, top: 4, right: 8 },
     xAxis: {
       type: 'category',
       boundaryGap: false,
@@ -71,30 +70,20 @@ function render() {
       {
         name: '下行',
         type: 'line',
-        smooth: true,
+        smooth: false,
         symbol: 'none',
         data: pts.map((p) => p.down),
         lineStyle: { width: 1.5, color: cp.down },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: cp.downArea[0] },
-            { offset: 1, color: cp.downArea[1] },
-          ]),
-        },
+        areaStyle: { color: cp.downArea },
       },
       {
         name: '上行',
         type: 'line',
-        smooth: true,
+        smooth: false,
         symbol: 'none',
         data: pts.map((p) => p.up),
         lineStyle: { width: 1.5, color: cp.up },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: cp.upArea[0] },
-            { offset: 1, color: cp.upArea[1] },
-          ]),
-        },
+        areaStyle: { color: cp.upArea },
       },
     ],
   })
@@ -121,12 +110,19 @@ onMounted(load)
 
 <template>
   <div class="panel">
-    <div class="toolbar">
-      <button v-for="r in ranges" :key="r.key" :class="{ active: current === r.key }" @click="pick(r.key)">
-        {{ r.label }}
-      </button>
-      <span style="flex: 1"></span>
-      <button @click="load">刷新</button>
+    <div class="view-bar">
+      <div class="seg" role="tablist" aria-label="时间范围">
+        <button
+          v-for="r in ranges"
+          :key="r.key"
+          :class="{ active: current === r.key }"
+          @click="pick(r.key)"
+        >
+          {{ r.label }}
+        </button>
+      </div>
+      <span class="spacer"></span>
+      <button class="btn" @click="load">刷新</button>
     </div>
     <div ref="el" class="chart"></div>
     <div v-if="result && result.points.length === 0 && !loading" class="empty">
@@ -135,24 +131,24 @@ onMounted(load)
   </div>
 
   <div class="panel" v-if="result && result.domains.length">
-    <h3 class="panel-title">域名流量排行（区间汇总）</h3>
+    <h3 class="panel-title">域名流量排行 · 区间汇总</h3>
     <table>
       <thead>
         <tr>
           <th>#</th>
           <th>域名</th>
-          <th>↓ 流量</th>
-          <th>↑ 流量</th>
-          <th>连接数</th>
+          <th class="num">↓ 流量</th>
+          <th class="num">↑ 流量</th>
+          <th class="num">连接数</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="(d, i) in result.domains" :key="d.domain">
-          <td>{{ i + 1 }}</td>
+          <td class="dim">{{ i + 1 }}</td>
           <td class="mono">{{ d.domain }}</td>
-          <td>{{ fmtBytes(d.down) }}</td>
-          <td>{{ fmtBytes(d.up) }}</td>
-          <td>{{ d.conns }}</td>
+          <td class="num">{{ fmtBytes(d.down) }}</td>
+          <td class="num">{{ fmtBytes(d.up) }}</td>
+          <td class="num">{{ d.conns }}</td>
         </tr>
       </tbody>
     </table>

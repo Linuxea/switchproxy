@@ -22,3 +22,4 @@ dist/
 web/node_modules/
 web/dist/assets/
 web/.vite/
+.opencode/

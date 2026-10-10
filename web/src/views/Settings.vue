@@ -277,10 +277,10 @@ onMounted(load)
             </select>
           </td>
           <td class="ops">
-            <button class="mini" :disabled="i === 0" @click="moveRule(i, -1)">↑</button>
-            <button class="mini" :disabled="i === rules.length - 1" @click="moveRule(i, 1)">↓</button>
+            <button class="btn btn-mini" :disabled="i === 0" @click="moveRule(i, -1)">↑</button>
+            <button class="btn btn-mini" :disabled="i === rules.length - 1" @click="moveRule(i, 1)">↓</button>
           </td>
-          <td><button class="mini del" @click="delRule(i)">✕</button></td>
+          <td><button class="btn btn-mini del" @click="delRule(i)">✕</button></td>
         </tr>
         <tr v-if="!rules.length">
           <td colspan="6" class="rules-empty">暂无规则，所有流量走默认动作（{{ form?.default }}）</td>
@@ -288,8 +288,8 @@ onMounted(load)
       </tbody>
     </table>
     <div class="rules-toolbar">
-      <button class="mini" @click="addRule">＋ 添加规则</button>
-      <button class="mini" @click="pasteOpen = !pasteOpen">批量粘贴</button>
+      <button class="btn btn-mini" @click="addRule">＋ 添加规则</button>
+      <button class="btn btn-mini" @click="pasteOpen = !pasteOpen">批量粘贴</button>
       <span class="hint" v-if="pasteMsg">{{ pasteMsg }}</span>
     </div>
     <div v-if="pasteOpen" class="paste-box">
@@ -300,7 +300,7 @@ onMounted(load)
       ></textarea>
       <div class="form-actions">
         <span class="hint">仅支持 DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR / PORT 五类，其余行会被跳过</span>
-        <button class="mini" :disabled="!pasteText.trim()" @click="appendPaste">追加到列表</button>
+        <button class="btn btn-mini" :disabled="!pasteText.trim()" @click="appendPaste">追加到列表</button>
       </div>
     </div>
   </div>
@@ -315,7 +315,7 @@ onMounted(load)
           <input type="checkbox" v-model="closeConns" />
           变更后断开现有连接
         </label>
-        <button class="primary" :disabled="saving || hasBadRows" @click="save">
+        <button class="btn btn-primary" :disabled="saving || hasBadRows" @click="save">
           {{ saving ? '保存中…' : '保存并生效' }}
         </button>
       </div>
@@ -345,7 +345,7 @@ onMounted(load)
         <input type="checkbox" v-model="closeConns" />
         导入后断开现有连接
       </label>
-      <button class="primary danger" :disabled="importing || !importText.trim()" @click="doImport">
+      <button class="btn btn-danger" :disabled="importing || !importText.trim()" @click="doImport">
         {{ importing ? '导入中…' : '导入并替换' }}
       </button>
     </div>
