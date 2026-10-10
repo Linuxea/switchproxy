@@ -24,6 +24,8 @@
 - 纯隧道转发，不解密不篡改流量：无 MITM、无证书安装、无隐私问题
 - 连接级日志（方法 / 目标 / 命中规则 / 动作）
 - **内置实时流量监控面板**：总览速率 / 连接明细 / 域名规则排行 / SQLite 历史回看
+- **面板设置页**：改监听端口 / 配置上级代理 / 导入整份配置，即存即生效（端口热切换，存量连接不断；失败自动回滚）
+- **Windows 桌面体验**：无控制台黑框、托盘常驻（打开面板 / 退出）、首次运行自动生成配置、日志落盘
 
 ## 快速开始
 
@@ -43,6 +45,18 @@ cp config.example.yaml config.yaml   # 按需修改规则
 ```
 
 然后打开监控面板 `http://127.0.0.1:9090`，再把系统/浏览器代理指向 `127.0.0.1:7899`，并关闭下一级代理客户端自己的"系统代理"开关（保持其本地端口监听即可）。
+
+### Windows
+
+```sh
+./build.sh    # 产出 dist/switchproxy-windows-amd64-<ver>.zip（portable 绿色包）
+```
+
+解压后双击 `switchproxy.exe`：
+
+- 无控制台黑框（windowsgui 子系统），托盘区出现图标，右键菜单：**打开面板 / 退出**
+- 首次运行在 exe 同目录自动生成 `config.yaml`（默认无上级代理、DIRECT，安全起点），日志写同目录 `switchproxy.log`
+- 一切端口 / 上级代理 / 规则调整都可以在面板「设置」页完成，也可以整份导入已有配置
 
 ## 配置说明
 
@@ -69,8 +83,11 @@ monitor:                      # 实时监控面板（缺省即启用）
 - **连接**：活跃连接实时表（协议/目标/命中规则/动作/双向速率与流量/时长，可远程强制关闭）+ 最近关闭记录
 - **排行**：按域名、按规则的流量 TOP N（WebSocket 每秒推送）
 - **历史**：1h / 24h / 7d / 30d 流量曲线与域名排行（SQLite 分钟级落盘）
+- **设置**：入站/管理监听端口、默认动作、上级代理表单；导入整份配置（Clash 风格规则行的现有格式）
+  - 保存与导入都是**先校验后落盘**：改端口即时热切换（存量连接不断），新端口被占用则整体回滚并报错
+  - 设置写回走 yaml.Node 点状更新，**保留原文件注释与规则**；导入则整份替换
 
-管理 API（默认仅本机监听）：`GET /api/overview`、`GET /api/connections`、`POST /api/connections/{id}/close`、`GET /api/tops`、`GET /api/history?range=1h|24h|7d|30d`、`GET /ws`（WebSocket 每秒推送全量快照）。
+管理 API（默认仅本机监听）：`GET /api/overview`、`GET /api/connections`、`POST /api/connections/{id}/close`、`GET /api/tops`、`GET /api/history?range=1h|24h|7d|30d`、`GET /ws`（WebSocket 每秒推送全量快照）、`GET|PUT /api/config`（读/改设置）、`POST /api/config/import`（body 为整份 YAML，校验通过后替换）。
 
 ## 说明与限制
 

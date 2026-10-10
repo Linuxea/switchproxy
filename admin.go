@@ -3,11 +3,16 @@ package main
 // 管理端：独立端口的 REST API + WebSocket 实时推送 + 内嵌前端。
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
+	"errors"
+	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,6 +146,80 @@ func handleCloseConn(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": stats.closeConn(id)})
 }
 
+// ---------------- 设置 API ----------------
+
+// handleConfig GET 返回当前配置摘要；PUT 应用设置页改动（点状写回，保留注释与规则）。
+func handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg := current.Load().(*Config)
+		writeJSON(w, map[string]any{
+			"listen":        cfg.Listen,
+			"monitorListen": cfg.Monitor.Listen,
+			"default":       cfg.Default,
+			"upstream": map[string]string{
+				"type":     cfg.Upstream.Type,
+				"addr":     cfg.Upstream.Addr,
+				"username": cfg.Upstream.Username,
+				"password": cfg.Upstream.Password,
+			},
+			"ruleCount":  len(cfg.rules),
+			"configPath": configPath,
+			"version":    version,
+		})
+	case http.MethodPut:
+		var p settingsPayload
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			http.Error(w, "请求体不是合法 JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := p.validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		orig, err := os.ReadFile(configPath)
+		if err != nil {
+			http.Error(w, "读取配置文件失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		newBytes, err := buildSettingsConfig(orig, &p)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := applyConfigBytes(newBytes); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleConfigImport 用请求体里的整份 YAML 替换当前配置（先整体校验，坏行报错不落盘）。
+func handleConfigImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "读取请求体失败: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf")) // 容忍 Windows 编辑器留下的 BOM
+	if len(bytes.TrimSpace(body)) == 0 {
+		http.Error(w, "导入内容为空", http.StatusBadRequest)
+		return
+	}
+	if err := applyConfigBytes(body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
 func staticHandler() http.Handler {
 	sub, err := fs.Sub(webDist, "web/dist")
 	if err != nil {
@@ -159,35 +238,88 @@ func staticHandler() http.Handler {
 	})
 }
 
-func startAdmin(addr string, hdb *HistoryDB) {
-	hub := &wsHub{clients: make(map[*wsClient]struct{})}
+// ---------------- 管理端监听（支持热切换） ----------------
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", hub.handleWS)
-	mux.HandleFunc("/api/overview", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, stats.Overview())
-	})
-	mux.HandleFunc("/api/connections", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"active": stats.Active(), "closed": stats.RecentClosed(100)})
-	})
-	mux.HandleFunc("/api/connections/", handleCloseConn)
-	mux.HandleFunc("/api/tops", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"domains": stats.TopDomains(20), "rules": stats.TopRules(15)})
-	})
-	mux.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
-		h := hdb
-		if h == nil {
-			writeJSON(w, HistoryResult{Range: r.URL.Query().Get("range"), Points: []HistoryPoint{}, Domains: []HistoryDomain{}})
-			return
-		}
-		writeJSON(w, h.queryHistory(r.URL.Query().Get("range")))
-	})
-	mux.Handle("/", staticHandler())
+var (
+	adminMu   sync.Mutex
+	adminLn   net.Listener
+	adminAddr string
+	adminHdb  *HistoryDB
 
-	go hub.loop()
-	srv := &http.Server{Addr: addr, Handler: mux}
-	log.Printf("monitor: dashboard on http://%s", addr)
-	if err := srv.ListenAndServe(); err != nil {
-		log.Println("monitor server:", err)
+	adminOnce    sync.Once
+	adminHandler http.Handler
+)
+
+func setAdminDB(hdb *HistoryDB) {
+	adminMu.Lock()
+	adminHdb = hdb
+	adminMu.Unlock()
+}
+
+// newAdminHandler 路由与 hub 只建一次；监听器换地址时复用同一份 handler。
+func newAdminHandler() http.Handler {
+	adminOnce.Do(func() {
+		hub := &wsHub{clients: make(map[*wsClient]struct{})}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ws", hub.handleWS)
+		mux.HandleFunc("/api/overview", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, stats.Overview())
+		})
+		mux.HandleFunc("/api/connections", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{"active": stats.Active(), "closed": stats.RecentClosed(100)})
+		})
+		mux.HandleFunc("/api/connections/", handleCloseConn)
+		mux.HandleFunc("/api/tops", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{"domains": stats.TopDomains(20), "rules": stats.TopRules(15)})
+		})
+		mux.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
+			h := adminHdb
+			if h == nil {
+				writeJSON(w, HistoryResult{Range: r.URL.Query().Get("range"), Points: []HistoryPoint{}, Domains: []HistoryDomain{}})
+				return
+			}
+			writeJSON(w, h.queryHistory(r.URL.Query().Get("range")))
+		})
+		mux.HandleFunc("/api/config", handleConfig)
+		mux.HandleFunc("/api/config/import", handleConfigImport)
+		mux.Handle("/", staticHandler())
+		go hub.loop()
+		adminHandler = mux
+	})
+	return adminHandler
+}
+
+// swapAdminListener 把面板监听切换到 addr（相同地址为 no-op）；
+// 绑定失败保留旧监听并返回错误。启动即关闭监控（disable: true）则保持关闭。
+func swapAdminListener(addr string) error {
+	adminMu.Lock()
+	defer adminMu.Unlock()
+	if adminLn == nil && current.Load().(*Config).Monitor.Disable {
+		return nil
 	}
+	if adminAddr == addr {
+		return nil
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	old := adminLn
+	adminLn, adminAddr = l, addr
+	go func() {
+		srv := &http.Server{Handler: newAdminHandler()}
+		if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if !errors.Is(err, net.ErrClosed) {
+				log.Println("monitor server:", err)
+			}
+		}
+	}()
+	if old != nil {
+		// 只关 listener：正在处理的请求（包括触发本次换端口的 PUT）仍能写完响应
+		old.Close()
+		log.Printf("monitor: dashboard moved to http://%s", addr)
+	} else {
+		log.Printf("monitor: dashboard on http://%s", addr)
+	}
+	return nil
 }

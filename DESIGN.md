@@ -207,6 +207,24 @@ dial 成功 ──▶ register()：入连接表，域名/规则计数 +1
 
 `go:embed all:web/dist` 把构建产物打进二进制；dist 里预置一个"前端尚未构建"占位页，保证不构建前端也能编译（`go:embed` 的硬性要求），并把补救动作直接写在占位页上。静态服务对未知路径回退 `index.html`，支撑前端路由刷新不 404。
 
+### 7.4 设置 API 与监听器热切换（admin.go, config.go）
+
+设置页（PUT `/api/config`）与整份导入（POST `/api/config/import`）共用一条事务性通路：**校验 → 落盘 → 激活 → 失败回滚**（config.go `applyConfigBytes`）。三个决策值得记录：
+
+- **写回走 yaml.Node 点状更新而非结构体重序列化**：设置页只动 listen/default/upstream/monitor.listen 四处，原文件的注释与规则原样保留——配置文件是用户 territory，程序只改自己承诺的字段。导入则是用户全权委托，整份替换。
+- **端口变更即时生效靠"swap 监听器"**：`swapProxyListener`/`swapAdminListener` 对相同地址是 no-op，换地址时先绑新再关旧（只关 listener 不动存量连接，触发换端口的那次 HTTP 响应也能写完）。绑定失败保留旧监听并向上冒泡错误，调用方回滚文件与内存——**新端口起不来不能成为断网理由**。
+- **回滚以"实际监听状态"为锚**：swap 函数比较的是当前真实 listener 地址而非配置值，所以 activate → 失败 → revert 的任何中间状态都能收敛，不依赖出错时的现场快照。
+
+热路径零参与：这一切只发生在管理端请求与每秒采样协程里，转发平面毫无感知。
+
+### 7.5 Windows 桌面壳（windows.go, tray_windows.go, platform_other.go）
+
+Windows 体验的全部代码用 build tag 隔离，Linux/macOS 侧是两个空函数 stub，交叉编译（`CGO_ENABLED=0`）与本地开发流完全不受影响。三个小决策：
+
+- **托盘是必需品而非装饰**：windowsgui 子系统下没有控制台，托盘「退出」是唯一优雅关闭入口。菜单只有「打开面板 / 退出」两项——复杂度预算花在系统集成，不花在菜单树。
+- **日志双写（stderr + exe 旁文件）**：stderr 在无控制台时写入无效但无害，从终端启动调试时两路都活着。轮转只做单代（>5MB 改名 .old）——本地工具的日志要的是"出事有迹可循"，不是日志系统。
+- **首次运行自动生成默认配置**：否则 windowsgui 下 loadConfig 失败即静默退出，用户看到的是"双击没反应"。默认配置是"无上级 + DIRECT"的安全起点，用户在设置页填好上级后再切 default。
+
 ## 8. 前端设计（web/）
 
 技术形态：Vue 3 + Vite + ECharts，四个视图（Overview / Connections / Tops / History）各自消费快照的一部分。两个值得说明的设计：
@@ -254,14 +272,20 @@ dial 成功 ──▶ register()：入连接表，域名/规则计数 +1
 ## 13. 代码地图
 
 ```
-main.go     转发平面：配置解析、规则引擎、HTTP/SOCKS5 入站、出站拨号、隧道、热重载
+main.go     转发平面：配置解析、规则引擎、HTTP/SOCKS5 入站、出站拨号、隧道、热重载、监听器 swap
+config.go   控制平面：设置页模型、yaml.Node 点状写回、apply/reload/revert 事务通路
 stats.go    采集平面：ConnMeta、聚合表、速率采样、countingConn 装饰器、快照物化
 history.go  存储平面：SQLite 打开/建表、分钟差分落盘、保留清理、范围查询降采样
-admin.go    展示平面：WS Hub、REST API、静态文件服务、SPA 回退、go:embed
-web/src/    前端：四个视图 + useWs（单例状态源）+ useConnRates（前端差分速率）
-build.sh    构建：web → linux 二进制 → windows 二进制（CGO_ENABLED=0）
+admin.go    展示平面：WS Hub、REST API（含 /api/config 设置与导入）、静态服务、管理监听 swap
+windows.go          Windows 壳：日志双写落盘、exe 旁默认配置生成（build tag: windows）
+tray_windows.go     Windows 壳：托盘图标与菜单（build tag: windows）
+platform_other.go   非 Windows 平台的空实现 stub（build tag: !windows）
+icon.ico            托盘图标（16/32/48，由 /tmp 一次性脚本生成后入库）
+web/src/    前端：五个视图（Overview / Connections / Tops / History / Settings）+ useWs + useConnRates
+build.sh    构建：web → linux 二进制 → windows GUI 二进制 → portable zip
 ```
 
 阅读顺序建议：`handleConn`（main.go:445）→ `serveHTTP`（main.go:263）→ `tunnel`（main.go:229）→
 `countingConn`（stats.go:328）→ `Stats`（stats.go:102）→ `recordLoop`（history.go:88）→
-`wsHub.loop`（admin.go:99）。这条线就是一条连接从生到死、从字节到像素的完整旅程。
+`wsHub.loop`（admin.go:99）→ `applyConfigBytes`（config.go）。这条线就是一条连接从生到死、从字节到像素的完整旅程；
+最后一站是"用户改了配置之后发生什么"。

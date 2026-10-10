@@ -13,8 +13,10 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -89,6 +91,16 @@ func loadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg, err := parseConfigBytes(b)
+	if err != nil {
+		return nil, err
+	}
+	cfg.pidFile = path + ".pid"
+	return cfg, nil
+}
+
+// parseConfigBytes 解析并补全配置默认值；导入与热重载共用同一条校验路径。
+func parseConfigBytes(b []byte) (*Config, error) {
 	cfg := &Config{}
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
@@ -116,7 +128,6 @@ func loadConfig(path string) (*Config, error) {
 		}
 		cfg.rules = append(cfg.rules, r)
 	}
-	cfg.pidFile = path + ".pid"
 	return cfg, nil
 }
 
@@ -440,7 +451,50 @@ func serveSocks5(client net.Conn, br *bufio.Reader) {
 var (
 	configPath string
 	current    atomic.Value
+	version    = "dev"
 )
+
+// 入站监听器热切换：设置页改端口后关旧 listener 开新 listener，存量隧道不受影响。
+var (
+	lnMu      sync.Mutex
+	proxyLn   net.Listener
+	proxyAddr string
+)
+
+func acceptLoop(l net.Listener) {
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				log.Println("accept:", err)
+			}
+			return
+		}
+		go handleConn(c)
+	}
+}
+
+// swapProxyListener 把入站监听切换到 addr（相同地址为 no-op）；
+// 绑定失败时保留旧监听并返回错误。
+func swapProxyListener(addr string) error {
+	lnMu.Lock()
+	defer lnMu.Unlock()
+	if proxyAddr == addr {
+		return nil
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	old := proxyLn
+	proxyLn, proxyAddr = l, addr
+	if old != nil {
+		old.Close() // 只关 listener，存量连接继续走完
+		log.Printf("proxy listener moved: %s", addr)
+	}
+	go acceptLoop(l)
+	return nil
+}
 
 func handleConn(client net.Conn) {
 	defer client.Close()
@@ -469,20 +523,31 @@ func watchConfig() {
 		m := statModTime(configPath)
 		if !m.Equal(last) {
 			last = m
-			if cfg, err := loadConfig(configPath); err == nil {
-				current.Store(cfg)
-				log.Printf("config reloaded: %d rules, default=%s", len(cfg.rules), cfg.Default)
-			} else {
+			if err := reloadNow(); err != nil {
 				log.Println("config reload failed:", err)
+			} else {
+				cfg := current.Load().(*Config)
+				log.Printf("config reloaded: %d rules, default=%s", len(cfg.rules), cfg.Default)
 			}
 		}
 	}
+}
+
+// shutdown 统一退出路径：托盘退出与 SIGINT/SIGTERM 都走这里。
+func shutdown() {
+	log.Println("shutting down")
+	if cfg, ok := current.Load().(*Config); ok {
+		os.Remove(cfg.pidFile)
+	}
+	os.Exit(0)
 }
 
 func main() {
 	flag.StringVar(&configPath, "c", "config.yaml", "config file path")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags)
+	setupPlatform() // Windows: 日志落盘 + exe 旁默认配置；其他平台空操作
+
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		log.Fatal("load config: ", err)
@@ -497,39 +562,38 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sig
-		log.Println("shutting down")
-		os.Remove(cfg.pidFile)
-		os.Exit(0)
+		shutdown()
 	}()
 
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
+	if err := swapProxyListener(cfg.Listen); err != nil {
 		log.Fatal("listen: ", err)
 	}
 	go watchConfig()
 	go stats.sampleLoop()
 	if !cfg.Monitor.Disable {
-		hdb, err := openHistory(cfg.Monitor.DB)
+		dbPath := cfg.Monitor.DB
+		if !filepath.IsAbs(dbPath) {
+			// 相对路径落在配置文件旁边，双击运行时不随 CWD 漂移
+			dbPath = filepath.Join(filepath.Dir(configPath), dbPath)
+		}
+		hdb, err := openHistory(dbPath)
 		if err != nil {
 			log.Println("monitor: history db disabled:", err)
 			hdb = nil
 		}
-		go startAdmin(cfg.Monitor.Listen, hdb)
+		setAdminDB(hdb)
+		if err := swapAdminListener(cfg.Monitor.Listen); err != nil {
+			log.Println("monitor: dashboard disabled:", err)
+		}
 	}
-	log.Printf("switchproxy listening on %s (HTTP+SOCKS5 mixed) | upstream %s (%s) | default=%s | %d rules | pid=%d | monitor=%s",
-		cfg.Listen, cfg.Upstream.Addr, cfg.Upstream.Type, cfg.Default, len(cfg.rules), os.Getpid(),
+	runPlatformTray() // Windows: 托盘常驻（内部起 goroutine）；其他平台空操作
+	log.Printf("switchproxy %s listening on %s (HTTP+SOCKS5 mixed) | upstream %s (%s) | default=%s | %d rules | pid=%d | monitor=%s",
+		version, cfg.Listen, cfg.Upstream.Addr, cfg.Upstream.Type, cfg.Default, len(cfg.rules), os.Getpid(),
 		func() string {
 			if cfg.Monitor.Disable {
 				return "off"
 			}
 			return "http://" + cfg.Monitor.Listen
 		}())
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			log.Println("accept:", err)
-			continue
-		}
-		go handleConn(c)
-	}
+	select {} // accept 循环在各自的 goroutine 里，主协程常驻
 }

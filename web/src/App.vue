@@ -5,12 +5,14 @@ import Overview from './views/Overview.vue'
 import Connections from './views/Connections.vue'
 import Tops from './views/Tops.vue'
 import History from './views/History.vue'
+import Settings from './views/Settings.vue'
 
 const tabs = [
   { key: 'overview', label: '总览' },
   { key: 'connections', label: '连接' },
   { key: 'tops', label: '排行' },
   { key: 'history', label: '历史' },
+  { key: 'settings', label: '设置' },
 ]
 const active = ref('overview')
 </script>
@@ -41,6 +43,7 @@ const active = ref('overview')
       <Connections v-if="active === 'connections'" />
       <Tops v-if="active === 'tops'" />
       <History v-if="active === 'history'" />
+      <Settings v-if="active === 'settings'" />
     </main>
   </div>
 </template>
