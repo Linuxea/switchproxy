@@ -166,6 +166,8 @@ func (s *Stats) unregister(m *ConnMeta) {
 		s.closed = s.closed[len(s.closed)-closedMax:]
 	}
 	s.closedMu.Unlock()
+
+	eventsEnqueue(m) // 原始事件投递（非阻塞，事件层关闭时为空操作）
 }
 
 // addUp / addDown 为隧道热路径，仅做原子累加与聚合计数。
@@ -298,6 +300,23 @@ func (s *Stats) closeConn(id uint64) bool {
 		m.client.Close()
 	}
 	return true
+}
+
+// CloseAll 关闭全部活跃连接，返回关闭条数。
+// 用于配置变更后强制存量流量按新规则重建（tunnel 两侧 defer Close 会连带收尾）。
+func (s *Stats) CloseAll() int {
+	s.mu.RLock()
+	metas := make([]*ConnMeta, 0, len(s.conns))
+	for _, m := range s.conns {
+		metas = append(metas, m)
+	}
+	s.mu.RUnlock()
+	for _, m := range metas {
+		if m.client != nil {
+			m.client.Close()
+		}
+	}
+	return len(metas)
 }
 
 // sampleLoop 每秒采样全局计数器差值，计算实时速率。

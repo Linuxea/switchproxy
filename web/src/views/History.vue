@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import * as echarts from 'echarts'
-import { useChart, axisCommon } from '../lib/chart'
+import { useChart, axisCommon, chartPalette } from '../lib/chart'
 import { fmtBytes } from '../lib/format'
 
 interface HistoryPoint {
@@ -45,6 +45,8 @@ function timeLabel(t: number, rng: string) {
 
 function render() {
   if (!result.value) return
+  const ax = axisCommon()
+  const cp = chartPalette()
   const pts = result.value.points
   apply({
     animation: false,
@@ -53,17 +55,17 @@ function render() {
       trigger: 'axis',
       valueFormatter: (v) => fmtBytes(Number(v)),
     },
-    legend: { data: ['下行', '上行'], textStyle: { color: '#9aa4b2' }, top: 4, right: 8 },
+    legend: { data: ['下行', '上行'], textStyle: { color: cp.legend }, top: 4, right: 8 },
     xAxis: {
       type: 'category',
       boundaryGap: false,
       data: pts.map((p) => timeLabel(p.t, result.value!.range)),
-      ...axisCommon,
+      ...ax,
     },
     yAxis: {
       type: 'value',
-      ...axisCommon,
-      axisLabel: { ...axisCommon.axisLabel, formatter: (v: number) => fmtBytes(v) },
+      ...ax,
+      axisLabel: { ...ax.axisLabel, formatter: (v: number) => fmtBytes(v) },
     },
     series: [
       {
@@ -72,11 +74,11 @@ function render() {
         smooth: true,
         symbol: 'none',
         data: pts.map((p) => p.down),
-        lineStyle: { width: 1.5, color: '#22d3ee' },
+        lineStyle: { width: 1.5, color: cp.down },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(34,211,238,0.28)' },
-            { offset: 1, color: 'rgba(34,211,238,0)' },
+            { offset: 0, color: cp.downArea[0] },
+            { offset: 1, color: cp.downArea[1] },
           ]),
         },
       },
@@ -86,11 +88,11 @@ function render() {
         smooth: true,
         symbol: 'none',
         data: pts.map((p) => p.up),
-        lineStyle: { width: 1.5, color: '#f59e0b' },
+        lineStyle: { width: 1.5, color: cp.up },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(245,158,11,0.22)' },
-            { offset: 1, color: 'rgba(245,158,11,0)' },
+            { offset: 0, color: cp.upArea[0] },
+            { offset: 1, color: cp.upArea[1] },
           ]),
         },
       },

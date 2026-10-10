@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,10 +152,15 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg := current.Load().(*Config)
+		rules := cfg.Rules
+		if rules == nil {
+			rules = []string{}
+		}
 		writeJSON(w, map[string]any{
 			"listen":        cfg.Listen,
 			"monitorListen": cfg.Monitor.Listen,
 			"default":       cfg.Default,
+			"rules":         rules,
 			"upstream": map[string]string{
 				"type":     cfg.Upstream.Type,
 				"addr":     cfg.Upstream.Addr,
@@ -177,21 +181,12 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		orig, err := os.ReadFile(configPath)
+		closed, err := applySettings(&p)
 		if err != nil {
-			http.Error(w, "读取配置文件失败: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		newBytes, err := buildSettingsConfig(orig, &p)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := applyConfigBytes(newBytes); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		writeJSON(w, map[string]bool{"ok": true})
+		writeJSON(w, map[string]any{"ok": true, "closed": closed})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -213,11 +208,15 @@ func handleConfigImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "导入内容为空", http.StatusBadRequest)
 		return
 	}
-	if err := applyConfigBytes(body); err != nil {
+	closeConns := r.URL.Query().Get("closeConns") == "1"
+	closed, err := applyConfigBytes(body, closeConns)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, map[string]bool{"ok": true})
+	// 带回实际生效的管理端地址：导入可能换端口，前端据此引导跳转
+	cfg := current.Load().(*Config)
+	writeJSON(w, map[string]any{"ok": true, "closed": closed, "monitorListen": cfg.Monitor.Listen})
 }
 
 func staticHandler() http.Handler {

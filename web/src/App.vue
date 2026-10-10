@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { wsState } from './composables/useWs'
+import { themeState, toggleTheme } from './composables/useTheme'
 import Overview from './views/Overview.vue'
 import Connections from './views/Connections.vue'
 import Tops from './views/Tops.vue'
@@ -15,6 +16,9 @@ const tabs = [
   { key: 'settings', label: '设置' },
 ]
 const active = ref('overview')
+// 仅图表视图需要随主题重挂载（重建 ECharts 调色板）；
+// Settings/Connections 不带 :key，切主题不丢未保存的编辑/筛选状态。
+const themeKey = computed(() => (themeState.dark ? 'dark' : 'light'))
 </script>
 
 <template>
@@ -37,12 +41,20 @@ const active = ref('overview')
         <span class="dot"></span>
         {{ wsState.connected ? '实时' : '重连中' }}
       </div>
+      <button
+        class="theme-toggle"
+        :title="themeState.dark ? '切换到亮色' : '切换到暗色'"
+        @click="toggleTheme"
+      >
+        {{ themeState.dark ? '☀' : '🌙' }}
+      </button>
     </header>
+    <!-- 图表视图带 :key 随主题重挂载重绘；有本地状态的视图不带，避免切主题丢编辑 -->
     <main class="content">
-      <Overview v-if="active === 'overview'" />
+      <Overview v-if="active === 'overview'" :key="themeKey" />
       <Connections v-if="active === 'connections'" />
-      <Tops v-if="active === 'tops'" />
-      <History v-if="active === 'history'" />
+      <Tops v-if="active === 'tops'" :key="themeKey" />
+      <History v-if="active === 'history'" :key="themeKey" />
       <Settings v-if="active === 'settings'" />
     </main>
   </div>

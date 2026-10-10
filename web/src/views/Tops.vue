@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { wsState } from '../composables/useWs'
-import { useChart, axisCommon } from '../lib/chart'
+import { useChart, axisCommon, chartPalette } from '../lib/chart'
 import { fmtBytes } from '../lib/format'
 
 const domEl = ref<HTMLElement | null>(null)
@@ -13,21 +13,23 @@ const domains = computed(() => wsState.snap?.topDomains ?? [])
 const rules = computed(() => wsState.snap?.topRules ?? [])
 
 watch(domains, (list) => {
+  const ax = axisCommon()
+  const p = chartPalette()
   applyDom({
     animationDurationUpdate: 300,
     grid: { left: 8, right: 24, top: 8, bottom: 4, containLabel: true },
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v) => fmtBytes(Number(v)) },
     xAxis: {
       type: 'value',
-      ...axisCommon,
-      axisLabel: { ...axisCommon.axisLabel, formatter: (v: number) => fmtBytes(v) },
+      ...ax,
+      axisLabel: { ...ax.axisLabel, formatter: (v: number) => fmtBytes(v) },
     },
     yAxis: {
       type: 'category',
       data: [...list].reverse().map((d) => d.name),
-      ...axisCommon,
+      ...ax,
       axisLabel: {
-        color: '#c7d0dd',
+        color: p.text,
         width: 180,
         overflow: 'truncate',
         fontFamily: 'JetBrains Mono, Consolas, monospace',
@@ -37,7 +39,7 @@ watch(domains, (list) => {
       {
         type: 'bar',
         data: [...list].reverse().map((d) => d.up + d.down),
-        itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] },
+        itemStyle: { color: p.down, borderRadius: [0, 3, 3, 0] },
         barMaxWidth: 14,
       },
     ],
@@ -45,26 +47,28 @@ watch(domains, (list) => {
 })
 
 watch(rules, (list) => {
+  const ax = axisCommon()
+  const p = chartPalette()
   applyRule({
     animationDurationUpdate: 300,
     grid: { left: 8, right: 24, top: 8, bottom: 4, containLabel: true },
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v) => fmtBytes(Number(v)) },
     xAxis: {
       type: 'value',
-      ...axisCommon,
-      axisLabel: { ...axisCommon.axisLabel, formatter: (v: number) => fmtBytes(v) },
+      ...ax,
+      axisLabel: { ...ax.axisLabel, formatter: (v: number) => fmtBytes(v) },
     },
     yAxis: {
       type: 'category',
       data: [...list].reverse().map((d) => d.name),
-      ...axisCommon,
-      axisLabel: { color: '#c7d0dd', fontFamily: 'JetBrains Mono, Consolas, monospace' },
+      ...ax,
+      axisLabel: { color: p.text, fontFamily: 'JetBrains Mono, Consolas, monospace' },
     },
     series: [
       {
         type: 'bar',
         data: [...list].reverse().map((d) => d.up + d.down),
-        itemStyle: { color: '#f59e0b', borderRadius: [0, 3, 3, 0] },
+        itemStyle: { color: p.up, borderRadius: [0, 3, 3, 0] },
         barMaxWidth: 14,
       },
     ],

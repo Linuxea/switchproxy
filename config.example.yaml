@@ -29,3 +29,5 @@ monitor:
   listen: 127.0.0.1:9090   # 管理端地址，浏览器打开即面板
   db: switchproxy.db       # SQLite 历史库（分钟级流量点 + 按天域名统计）
   # disable: true          # 设为 true 关闭监控
+  # disableEvents: true    # 设为 true 关闭连接事件落盘（逐连接原始数据，可做任意聚合）
+  # eventsDays: 30         # 连接事件保留天数

@@ -21,9 +21,11 @@ var applyMu sync.Mutex // 串行化「写盘 + 激活」，避免与 2 秒热重
 // ---------------- 设置页的数据模型 ----------------
 
 type settingsPayload struct {
-	Listen        string `json:"listen"`
-	MonitorListen string `json:"monitorListen"`
-	Default       string `json:"default"`
+	Listen        string   `json:"listen"`
+	MonitorListen string   `json:"monitorListen"`
+	Default       string   `json:"default"`
+	Rules         []string `json:"rules"`      // nil = 不动规则（兼容旧客户端）；空数组 = 清空
+	CloseConns    bool     `json:"closeConns"` // 动作选项：应用成功后断开全部连接（不落盘）
 	Upstream      struct {
 		Type     string `json:"type"`
 		Addr     string `json:"addr"`
@@ -44,6 +46,11 @@ func (p *settingsPayload) validate() error {
 	case "DIRECT", "PROXY", "REJECT":
 	default:
 		return fmt.Errorf("默认动作必须是 DIRECT / PROXY / REJECT，got %q", p.Default)
+	}
+	for i, raw := range p.Rules {
+		if _, err := parseRule(raw); err != nil {
+			return fmt.Errorf("第 %d 条规则: %v", i+1, err)
+		}
 	}
 	if p.Upstream.Addr != "" {
 		if _, _, err := net.SplitHostPort(p.Upstream.Addr); err != nil {
@@ -114,6 +121,23 @@ func nodeMap(m *yaml.Node, key string) *yaml.Node {
 	return v
 }
 
+// nodeSetSeq 用新的字符串序列整体替换名为 key 的值（存在则原位替换，保留键的位置与其上方注释；
+// 序列内部的行间注释会随旧条目一起被替换掉——这是网页编辑规则的已声明的取舍）。
+func nodeSetSeq(m *yaml.Node, key string, vals []string) {
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, v := range vals {
+		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v})
+	}
+	if existing := nodeFind(m, key); existing != nil {
+		*existing = *seq
+		return
+	}
+	m.Content = append(m.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		seq,
+	)
+}
+
 // buildSettingsConfig 在原配置字节上应用设置页的改动，返回新的完整配置字节。
 func buildSettingsConfig(orig []byte, p *settingsPayload) ([]byte, error) {
 	var doc yaml.Node
@@ -126,6 +150,9 @@ func buildSettingsConfig(orig []byte, p *settingsPayload) ([]byte, error) {
 	root := doc.Content[0]
 	nodeSetStr(root, "listen", p.Listen)
 	nodeSetStr(root, "default", p.Default)
+	if p.Rules != nil {
+		nodeSetSeq(root, "rules", p.Rules)
+	}
 	if p.Upstream.Addr == "" {
 		nodeDel(root, "upstream") // 清空地址 = 删除整段上级配置
 	} else {
@@ -166,35 +193,60 @@ func activateConfig(cfg *Config) error {
 	return nil
 }
 
-// applyConfigBytes 校验并整体应用一份新的配置字节：落盘 -> 激活；
-// 激活失败（新端口被占用等）则回滚文件与内存，旧端口继续服务。
-func applyConfigBytes(newBytes []byte) error {
+// applyConfigBytes 校验并整体应用一份新的配置字节（导入路径）：
+// 落盘 -> 激活；激活失败（新端口被占用等）则回滚文件与内存，旧端口继续服务。
+// closeConns 为动作选项（不落盘）：成功应用后断开全部活跃连接，让新规则立即覆盖存量流量。
+func applyConfigBytes(newBytes []byte, closeConns bool) (closed int, err error) {
 	applyMu.Lock()
 	defer applyMu.Unlock()
+	return applyLocked(newBytes, closeConns)
+}
 
+// applySettings 设置页保存入口：读当前文件 + 点状构建 + 应用，全程持锁，
+// 避免并发 PUT 之间的读-改-写竞争（晚到的保存不会基于过期文件覆盖先到的修改）。
+func applySettings(p *settingsPayload) (closed int, err error) {
+	applyMu.Lock()
+	defer applyMu.Unlock()
+	orig, err := os.ReadFile(configPath)
+	if err != nil {
+		return 0, fmt.Errorf("读取配置文件失败: %v", err)
+	}
+	newBytes, err := buildSettingsConfig(orig, p)
+	if err != nil {
+		return 0, err
+	}
+	return applyLocked(newBytes, p.CloseConns)
+}
+
+// applyLocked 「校验 -> 落盘 -> 激活 -> 失败回滚」的事务体，调用方持有 applyMu。
+func applyLocked(newBytes []byte, closeConns bool) (closed int, err error) {
 	if _, err := parseConfigBytes(newBytes); err != nil {
-		return fmt.Errorf("配置校验失败: %v", err)
+		return 0, fmt.Errorf("配置校验失败: %v", err)
 	}
 	oldBytes, _ := os.ReadFile(configPath)
 	if err := os.WriteFile(configPath, newBytes, 0644); err != nil {
-		return fmt.Errorf("写入配置失败: %v", err)
+		return 0, fmt.Errorf("写入配置失败: %v", err)
 	}
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		revertConfig(oldBytes)
-		return fmt.Errorf("配置校验失败: %v", err)
+		return 0, fmt.Errorf("配置校验失败: %v", err)
 	}
 	if err := activateConfig(cfg); err != nil {
 		log.Println("config apply failed, reverting:", err)
 		revertConfig(oldBytes)
-		return err
+		return 0, err
 	}
-	log.Printf("config applied: %d rules, listen=%s, upstream=%s(%s), default=%s",
-		len(cfg.rules), cfg.Listen, cfg.Upstream.Addr, cfg.Upstream.Type, cfg.Default)
-	return nil
+	if closeConns {
+		closed = stats.CloseAll()
+	}
+	log.Printf("config applied: %d rules, listen=%s, upstream=%s(%s), default=%s, closed=%d",
+		len(cfg.rules), cfg.Listen, cfg.Upstream.Addr, cfg.Upstream.Type, cfg.Default, closed)
+	return closed, nil
 }
 
 // revertConfig 把文件与内存恢复到旧字节（调用方持有 applyMu）。
+// 用 loadConfig 而非 parseConfigBytes 回读：连带补全 pidFile 等路径派生字段。
 func revertConfig(oldBytes []byte) {
 	if oldBytes == nil {
 		return
@@ -202,7 +254,7 @@ func revertConfig(oldBytes []byte) {
 	if err := os.WriteFile(configPath, oldBytes, 0644); err != nil {
 		log.Println("config revert write failed:", err)
 	}
-	if oldCfg, err := parseConfigBytes(oldBytes); err == nil {
+	if oldCfg, err := loadConfig(configPath); err == nil {
 		current.Store(oldCfg)
 		if err := swapProxyListener(oldCfg.Listen); err != nil {
 			log.Println("config revert proxy listen:", err)

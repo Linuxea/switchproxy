@@ -43,9 +43,11 @@ type Rule struct {
 }
 
 type MonitorConfig struct {
-	Disable bool   `yaml:"disable"` // 设为 true 关闭监控面板
-	Listen  string `yaml:"listen"`  // 管理端监听地址，默认 127.0.0.1:9090
-	DB      string `yaml:"db"`      // SQLite 历史库路径，默认 switchproxy.db
+	Disable       bool   `yaml:"disable"`       // 设为 true 关闭监控面板
+	Listen        string `yaml:"listen"`        // 管理端监听地址，默认 127.0.0.1:9090
+	DB            string `yaml:"db"`            // SQLite 历史库路径，默认 switchproxy.db
+	DisableEvents bool   `yaml:"disableEvents"` // 设为 true 关闭连接事件落盘（逐连接原始数据）
+	EventsDays    int    `yaml:"eventsDays"`    // 连接事件保留天数，默认 30
 }
 
 type Config struct {
@@ -65,6 +67,9 @@ func parseRule(raw string) (Rule, error) {
 	}
 	if len(parts) != 3 {
 		return Rule{}, fmt.Errorf("bad rule (want TYPE,VALUE,ACTION): %q", raw)
+	}
+	if parts[1] == "" {
+		return Rule{}, fmt.Errorf("bad rule (empty value): %q", raw)
 	}
 	r := Rule{Raw: raw, Type: strings.ToUpper(parts[0]), Value: parts[1], Action: strings.ToUpper(parts[2])}
 	switch r.Type {
@@ -120,6 +125,9 @@ func parseConfigBytes(b []byte) (*Config, error) {
 	}
 	if cfg.Monitor.DB == "" {
 		cfg.Monitor.DB = "switchproxy.db"
+	}
+	if cfg.Monitor.EventsDays <= 0 {
+		cfg.Monitor.EventsDays = 30
 	}
 	for _, raw := range cfg.Rules {
 		r, err := parseRule(raw)
@@ -576,7 +584,7 @@ func main() {
 			// 相对路径落在配置文件旁边，双击运行时不随 CWD 漂移
 			dbPath = filepath.Join(filepath.Dir(configPath), dbPath)
 		}
-		hdb, err := openHistory(dbPath)
+		hdb, err := openHistory(dbPath, !cfg.Monitor.DisableEvents, cfg.Monitor.EventsDays)
 		if err != nil {
 			log.Println("monitor: history db disabled:", err)
 			hdb = nil

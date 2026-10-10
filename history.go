@@ -5,6 +5,7 @@ package main
 import (
 	"database/sql"
 	"log"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,6 +18,7 @@ type HistoryDB struct {
 		up, down, conns int64
 	}
 	lastDomains map[string]AggEntry
+	eventsDays  int // 连接事件保留天数
 }
 
 type HistoryPoint struct {
@@ -39,7 +41,7 @@ type HistoryResult struct {
 	Domains []HistoryDomain `json:"domains"`
 }
 
-func openHistory(path string) (*HistoryDB, error) {
+func openHistory(path string, events bool, eventsDays int) (*HistoryDB, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -48,13 +50,17 @@ func openHistory(path string) (*HistoryDB, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &HistoryDB{db: db, lastDomains: make(map[string]AggEntry)}
+	h := &HistoryDB{db: db, lastDomains: make(map[string]AggEntry), eventsDays: eventsDays}
 	if err := h.init(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	go h.recordLoop()
 	go h.retentionLoop()
+	if events {
+		eventsEnabled.Store(true)
+		go h.eventsLoop()
+	}
 	return h, nil
 }
 
@@ -75,6 +81,18 @@ func (h *HistoryDB) init() error {
 			PRIMARY KEY (day, domain)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_stats_day ON domain_stats(day)`,
+		`CREATE TABLE IF NOT EXISTS conn_events (
+			ts     INTEGER NOT NULL,
+			proto  TEXT NOT NULL,
+			host   TEXT NOT NULL,
+			port   TEXT NOT NULL,
+			rule   TEXT NOT NULL,
+			action TEXT NOT NULL,
+			up     INTEGER NOT NULL DEFAULT 0,
+			down   INTEGER NOT NULL DEFAULT 0,
+			dur_ms INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_conn_events_ts ON conn_events(ts)`,
 	}
 	for _, s := range stmts {
 		if _, err := h.db.Exec(s); err != nil {
@@ -134,16 +152,127 @@ func (h *HistoryDB) flushDomains(day time.Time) {
 	}
 }
 
-// retentionLoop 清理过期数据：流量点保留 30 天，域名统计保留 90 天。
+// ---------------- 连接事件（原始数据层） ----------------
+
+// conn_events 存逐连接的关闭事件：后续任意维度/任意时段的聚合都可以用 SQL 现算。
+// 与分钟/按天两张汇总表并存——汇总表是面板的快速路径，事件表是原始底账。
+
+type connEvent struct {
+	ts                              int64
+	proto, host, port, rule, action string
+	up, down, durMs                 int64
+}
+
+var (
+	eventsCh      = make(chan connEvent, 4096)
+	eventsEnabled atomic.Bool // 事件写协程启动后才置位；生产端据此短路，避免无消费者时堆积
+	eventsDropped atomic.Int64
+)
+
+// eventsEnqueue 在 unregister（转发协程）里被调用：只做非阻塞投递，塞满即丢，绝不阻塞热路径。
+func eventsEnqueue(m *ConnMeta) {
+	if !eventsEnabled.Load() {
+		return
+	}
+	ev := connEvent{
+		ts:     time.Now().Unix(),
+		proto:  m.Protocol,
+		host:   m.Host,
+		port:   m.Port,
+		rule:   m.Rule,
+		action: m.Action,
+		up:     m.up.Load(),
+		down:   m.down.Load(),
+		durMs:  time.Since(m.Start).Milliseconds(),
+	}
+	select {
+	case eventsCh <- ev:
+	default:
+		eventsDropped.Add(1)
+	}
+}
+
+// eventsLoop 单写协程：攒批 + 事务落盘，每 2 秒或满 512 条一刷。
+func (h *HistoryDB) eventsLoop() {
+	stmt, err := h.db.Prepare(`INSERT INTO conn_events(ts, proto, host, port, rule, action, up, down, dur_ms)
+		VALUES(?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		log.Println("history: events prepare:", err)
+		eventsEnabled.Store(false)
+		return
+	}
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+	buf := make([]connEvent, 0, 512)
+	for {
+		select {
+		case ev := <-eventsCh:
+			buf = append(buf, ev)
+			if len(buf) >= cap(buf) {
+				h.flushEvents(stmt, &buf)
+			}
+		case <-tick.C:
+			if d := eventsDropped.Swap(0); d > 0 {
+				log.Printf("history: events dropped: %d", d)
+			}
+			if len(buf) > 0 {
+				h.flushEvents(stmt, &buf)
+			}
+		}
+	}
+}
+
+// flushEvents 单事务写入整批；失败时保留批次待下轮重试（DB 抖动可自愈），
+// 仅在积压超限时丢最旧的，防持续失败下无界增长。
+func (h *HistoryDB) flushEvents(stmt *sql.Stmt, buf *[]connEvent) {
+	if len(*buf) == 0 {
+		return
+	}
+	tx, err := h.db.Begin()
+	if err != nil {
+		log.Println("history: events tx:", err)
+		trimEvents(buf)
+		return
+	}
+	for _, e := range *buf {
+		if _, err := tx.Stmt(stmt).Exec(e.ts, e.proto, e.host, e.port, e.rule, e.action, e.up, e.down, e.durMs); err != nil {
+			log.Println("history: events insert:", err)
+			tx.Rollback()
+			trimEvents(buf)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Println("history: events commit:", err)
+		trimEvents(buf)
+		return
+	}
+	*buf = (*buf)[:0]
+}
+
+// trimEvents 重试积压上限：超过 maxKeep 条时保留最新的部分。
+func trimEvents(buf *[]connEvent) {
+	const maxKeep = 512
+	if len(*buf) > maxKeep {
+		n := copy(*buf, (*buf)[len(*buf)-maxKeep:])
+		*buf = (*buf)[:n]
+	}
+}
+
+// retentionLoop 清理过期数据：流量点保留 30 天，域名统计保留 90 天，连接事件保留 eventsDays 天。
 func (h *HistoryDB) retentionLoop() {
 	clean := func() {
 		pointCut := time.Now().Add(-30 * 24 * time.Hour).Unix()
 		dayCut := time.Now().Add(-90 * 24 * time.Hour).Format("2006-01-02")
+		evCut := time.Now().Add(-time.Duration(h.eventsDays) * 24 * time.Hour).Unix()
 		if _, err := h.db.Exec(`DELETE FROM traffic_points WHERE minute < ?`, pointCut); err != nil {
 			log.Println("history: retention points:", err)
 		}
 		if _, err := h.db.Exec(`DELETE FROM domain_stats WHERE day < ?`, dayCut); err != nil {
 			log.Println("history: retention domains:", err)
+		}
+		if _, err := h.db.Exec(`DELETE FROM conn_events WHERE ts < ?`, evCut); err != nil {
+			log.Println("history: retention events:", err)
 		}
 	}
 	clean()

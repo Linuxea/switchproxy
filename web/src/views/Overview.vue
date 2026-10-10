@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import { wsState } from '../composables/useWs'
-import { useChart, axisCommon } from '../lib/chart'
+import { useChart, axisCommon, chartPalette } from '../lib/chart'
 import { fmtBytes, fmtRate, fmtUptime } from '../lib/format'
 
 const el = ref<HTMLElement | null>(null)
@@ -12,6 +12,8 @@ const ov = computed(() => wsState.snap?.overview ?? null)
 
 watch(ov, (o) => {
   if (!o) return
+  const ax = axisCommon()
+  const cp = chartPalette()
   const times = o.rates.map((p) => {
     const d = new Date(p.t * 1000)
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
@@ -23,12 +25,12 @@ watch(ov, (o) => {
       trigger: 'axis',
       valueFormatter: (v) => fmtRate(Number(v)),
     },
-    legend: { data: ['下行', '上行'], textStyle: { color: '#9aa4b2' }, top: 4, right: 8 },
-    xAxis: { type: 'category', boundaryGap: false, data: times, ...axisCommon },
+    legend: { data: ['下行', '上行'], textStyle: { color: cp.legend }, top: 4, right: 8 },
+    xAxis: { type: 'category', boundaryGap: false, data: times, ...ax },
     yAxis: {
       type: 'value',
-      ...axisCommon,
-      axisLabel: { ...axisCommon.axisLabel, formatter: (v: number) => fmtBytes(v) },
+      ...ax,
+      axisLabel: { ...ax.axisLabel, formatter: (v: number) => fmtBytes(v) },
     },
     series: [
       {
@@ -37,11 +39,11 @@ watch(ov, (o) => {
         smooth: true,
         symbol: 'none',
         data: o.rates.map((p) => p.down),
-        lineStyle: { width: 1.5, color: '#22d3ee' },
+        lineStyle: { width: 1.5, color: cp.down },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(34,211,238,0.28)' },
-            { offset: 1, color: 'rgba(34,211,238,0)' },
+            { offset: 0, color: cp.downArea[0] },
+            { offset: 1, color: cp.downArea[1] },
           ]),
         },
       },
@@ -51,11 +53,11 @@ watch(ov, (o) => {
         smooth: true,
         symbol: 'none',
         data: o.rates.map((p) => p.up),
-        lineStyle: { width: 1.5, color: '#f59e0b' },
+        lineStyle: { width: 1.5, color: cp.up },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(245,158,11,0.22)' },
-            { offset: 1, color: 'rgba(245,158,11,0)' },
+            { offset: 0, color: cp.upArea[0] },
+            { offset: 1, color: cp.upArea[1] },
           ]),
         },
       },
